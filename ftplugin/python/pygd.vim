@@ -36,38 +36,63 @@ sys.path.insert(0, scriptdir)
 import ast
 from pyflakes import checker
 
-class MyChecker(checker.Checker):
+class GDChecker(checker.Checker):
+    """An AST visitor that finds the definition of a target object."""
 
     def __init__(self, tree, lineno, name, filename='(none)'):
+        """Initialize the checker and search for the target.
+
+        Args:
+          tree: an ast.Node representing the root of a tree.
+          lineno: int, the line number of the object to be searched for.
+          name: string, the identifier of the object.
+          filename: optional string representing the module's file name.
+        """
         self.name = name
         self.lineno = lineno
         self.target = None
         self.targetScope = None
-        super(MyChecker, self).__init__(tree, filename)
+        super(GDChecker, self).__init__(tree, filename)
 
     def getScope(self, target):
+        """
+        Find the target's scope.
+
+        Given an ast.Node representing the target object, travel up the stack of
+        scopes to find the node that originally defined the object.
+        """
         if target in self.scope:
             return self.scope[target]
         for scope in self.scopeStack[-2::-1]:
             if target in scope:
                 return scope[target]
-        print 'ok didnt find anything'
+        # Was not found: this is probably an attribute declared in another 
+        # method, or perhaps an undefined reference.
+        print 'Sorry, no definition found.'
 
     def handleChildren(self, tree):
+        """
+        Check if the `attr` of the current node matches target before iterating
+        through child nodes.
+        """
         if (hasattr(tree, 'lineno') and tree.lineno == self.lineno
-            and hasattr(tree, 'attr') and tree.attr == self.name):
-                self.target = tree
-                scope = self.getScope(tree.attr)
-                self.targetScope = scope
+              and hasattr(tree, 'attr') and tree.attr == self.name):
+            self.target = tree
+            scope = self.getScope(tree.attr)
+            self.targetScope = scope
 
         for node in checker.iter_child_nodes(tree):
             self.handleNode(node, tree)
 
     def NAME(self, node):
-        super(MyChecker, self).NAME(node)
+        """
+        Visitor function for `Name` nodes: check if it matches target before
+        handling node.
+        """
+        super(GDChecker, self).NAME(node)
         if node.lineno == self.lineno and node.id == self.name:
-          self.target = node
-          self.targetScope = self.getScope(node.id)
+            self.target = node
+            self.targetScope = self.getScope(node.id)
 
 
 # pyflakes Checker sets a lot of names explicitly to point at its handleChildren
@@ -75,10 +100,18 @@ class MyChecker(checker.Checker):
 for x in dir(checker.Checker):
     obj = getattr(checker.Checker, x)
     if obj == checker.Checker.handleChildren:
-        setattr(MyChecker, x, MyChecker.handleChildren)
+        setattr(GDChecker, x, GDChecker.handleChildren)
 
 
 def goto_definition(buffer):
+    """
+    Main function called by vim.
+
+    Parses the buffer into an AST, then uses the Checker to find the definition
+    of the identifier under the cursor, and moves the cursor to the position of
+    that definition.
+    """
+
     filename = buffer.name
     contents = '\n'.join(buffer[:]) + '\n'
 
@@ -98,8 +131,10 @@ def goto_definition(buffer):
         print 'Error while parsing, could not continue.'
     word = vim.eval('expand("<cword>")')
     row, col = vim.current.window.cursor
-    parser = MyChecker(tree, row, word, filename)
+
+    parser = GDChecker(tree, row, word, filename)
     scope = parser.targetScope
+
     if scope:
         source = parser.targetScope.source
         # If it's a function arg set, find the relevant one.
@@ -108,9 +143,9 @@ def goto_definition(buffer):
                 if arg.id == word:
                     source = arg
         vim.current.window.cursor = (source.lineno, source.col_offset)
-        target_word = vim.eval('expand("<cword>")')
         # Some statements (eg from foo import bar) don't have child nodes for
         # the sub-elements, so search the line until we find the actual word.
+        target_word = vim.eval('expand("<cword>")')
         if target_word != word:
             line = vim.current.line
             vim.current.window.cursor = (source.lineno, line.find(word))
